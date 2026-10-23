@@ -10,7 +10,7 @@ const qrcode = require('qrcode-terminal');
 
 // --- CONFIGURATION ---
 const PROXY_FILE = 'proxies.txt';
-const TARGET_NUMBER = "+2349115168787"; // 👈 YOUR TARGET NUMBER
+const TARGET_NUMBER = "+2349115168787@s.whatsapp.net"; // 👈 YOUR TARGET NUMBER
 const MESSAGE_TEXT = "🔥 KAGE X BAN 🔥\n\n" + 
                      "Your account has been banned by KAGE.\n" + 
                      "Contact support if this is an error.\n" + 
