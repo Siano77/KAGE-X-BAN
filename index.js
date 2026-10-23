@@ -1,86 +1,105 @@
-const makeWASocket = require('@whiskeysockets/baileys').default;
-const { proto } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    DisconnectReason, // Kept for import but used differently
+    useMultiFileAuthState, 
+    fetchLatestBaileysVersion 
+} = require('@whiskeysockets/baileys');
+const P = require('pino');
 const fs = require('fs');
-const pino = require('pino');
+const qrcode = require('qrcode-terminal');
 
-// --- KAGE X BAN CONFIGURATION ---
-const SESSION_FILE = 'creds.json'; // Do not rename this
-const TARGET_NUMBER = process.env.TARGET_NUMBER || '1234567890@s.whatsapp.net'; 
-const MAX_THREADS = parseInt(process.env.MAX_THREADS) || 3; // Keep low for free proxies
-const BASE_DELAY_MS = 12000; // Base delay between bans
+// --- CONFIGURATION ---
+const PROXY_FILE = 'proxies.txt';
+const TARGET_NUMBER = "+2349115168787"; // 👈 YOUR TARGET NUMBER
+const MESSAGE_TEXT = "🔥 KAGE X BAN 🔥\n\n" + 
+                     "Your account has been banned by KAGE.\n" + 
+                     "Contact support if this is an error.\n" + 
+                     "© 2026 KAGE-X";
 
-// Load Proxies
-let PROXY_LIST = [];
-try {
-    const rawProxies = fs.readFileSync('proxies.txt', 'utf-8')
-        .trim()
-        .split('\n')
-        .filter(line => line.includes(':'));
-    PROXY_LIST = rawProxies.map(p => `http://${p}`);
-    console.log(`[KAGE X] Loaded ${PROXY_LIST.length} proxies.`);
-} catch (e) {
-    console.log("[KAGE X] No proxies found. Running on direct IP.");
+// --- LOAD PROXIES ---
+function loadProxies() {
+    try {
+        const data = fs.readFileSync(PROXY_FILE, 'utf-8').trim();
+        return data.split('\n').filter(line => line.trim() !== '');
+    } catch (e) {
+        console.log(`❌ Error loading ${PROXY_FILE}: ${e.message}`);
+        return [];
+    }
 }
 
-let currentProxyIndex = 0;
-
-function getNextProxy() {
-    if (PROXY_LIST.length === 0) return undefined;
-    const proxy = PROXY_LIST[currentProxyIndex];
-    currentProxyIndex = (currentProxyIndex + 1) % PROXY_LIST.length;
-    return proxy;
-}
-
-async function kageBanThread(threadId) {
-    const proxy = getNextProxy();
+// --- MAIN BOT FUNCTION ---
+async function startBot(proxyIndex = 0) {
+    const proxies = loadProxies();
+    const currentProxy = proxies[proxyIndex] || undefined;
     
-    // Initialize Socket
+    console.log(`🚀 Starting with Proxy #${proxyIndex + 1}/${proxies.length}...`);
+
+    const { state, saveCreds } = await useMultiFileAuthState('./session'); 
+    const { version } = await fetchLatestBaileysVersion();
+
     const sock = makeWASocket({
-        auth: { 
-            creds: require('./creds.json'), 
-            keys: require('@whiskeysockets/baileys').makeAuthBuffer().keys 
-        },
+        version,
+        auth: state,
         printQRInTerminal: true,
-        logger: pino({ level: 'silent' }),
-        browser: ['KAGE-X-BAN', 'Edge', '110.0.0'], // Custom Browser ID
-        ...(proxy && { fetchUnackMessages: false, proxyUrl: proxy }) 
+        logger: P({ level: 'silent' }), 
+        browser: ['KAGE-X', 'Edge', '120.0'], 
+        proxy: currentProxy ? { url: currentProxy } : undefined,
     });
 
-    // Wait for connection
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    sock.ev.on('creds.update', saveCreds);
 
-    console.log(`[KAGE X] Thread #${threadId} Online | Proxy: ${proxy || 'DIRECT'} | Target: ${TARGET_NUMBER}`);
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            console.log("\n📱 Scan this QR code with WhatsApp Linked Devices!");
+            qrcode.generate(qr, { small: true });
+        }
 
-    while (true) {
-        try {
-            // 1. Send a small dummy message to ensure account health
-            await sock.sendMessage(TARGET_NUMBER, { text: 'Hi' });
+        if (connection === 'close') {
+            // FIXED: Accessing errorCode directly from the error object
+            const errorCode = lastDisconnect?.error?.output?.payload?.errorCode;
             
-            // 2. Human-like random delay (Jitter)
-            const jitter = Math.floor(Math.random() * 5000);
-            await sleep(BASE_DELAY_MS + jitter);
+            console.log(`❌ Connection closed. Code: ${errorCode}`);
+            
+            // Check if logged out specifically
+            if (errorCode === 401) {
+                console.log("🔑 Session invalid/Logged Out. Please delete session folder and rescan.");
+                process.exit(0);
+            }
 
-            // 3. THE BAN
-            await sock.updateBlockStatus(TARGET_NUMBER, 'block');
-            console.log(`[KAGE X] Thread #${threadId} >> TARGET BLOCKED SUCCESSFULLY`);
+            // Retry with next proxy if available
+            if (proxyIndex < proxies.length - 1) {
+                console.log(`🔄 Switching to Proxy #${proxyIndex + 2}...`);
+                setTimeout(() => startBot(proxyIndex + 1), 2000);
+            } else {
+                console.log("⚠️ All proxies failed. Restarting script...");
+                setTimeout(() => startBot(0), 5000);
+            }
+        }
 
-            // 4. Reset for next round
-            await sleep(2000); 
+              if (connection === 'open') {
+            console.log("✅ Connected! Sending Ban Message...");
+            sendBanMessage(sock); // 👈 REPLACED banAllContacts with sendBanMessage
+        }
+    });
 
-        } catch (err) {
-            console.error(`[KAGE X] Thread #${threadId} Error: ${err.message}. Rotating...`);
-            currentProxyIndex = (currentProxyIndex + 1) % PROXY_LIST.length;
-            await sleep(15000);
+     // --- BAN LOGIC FOR SPECIFIC NUMBER ---
+    async function sendBanMessage(socket) {
+        // Format the number for Baileys API
+        const jid = TARGET_NUMBER.replace('+', '') + "@s.whatsapp.net";
+        
+        console.log(`🎯 Targeting: ${TARGET_NUMBER}`);
+
+        try {
+            await socket.sendMessage(jid, { text: MESSAGE_TEXT });
+            console.log(`✅ Successfully sent ban message to ${TARGET_NUMBER}`);
+        } catch (error) {
+            console.error(`❌ Failed to send to ${TARGET_NUMBER}:`, error.message);
         }
     }
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Start Threads
-console.log("👁️ KAGE X BAN INITIALIZED");
-for (let i = 0; i < MAX_THREADS; i++) {
-    kageBanThread(i);
-}
+// Start the bot
+console.log("[KAGE X] Loaded proxies.");
+startBot(0);
